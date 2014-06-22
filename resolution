@@ -1,0 +1,300 @@
+#!/bin/bash
+
+# Copyright 2014 GPL v3, Javier Di Grazia
+#
+# Este programa es software libre: Podes redistribuirlo y/o modificarlo
+# bajo los terminos de la  Licencia Publica General GNU, segun es 
+# publicado por la fundacion de software libre, ya sea la version 3 
+# de su licencia o (a su eleccion) cualquiera de las posteriores.
+#
+# Este programa se distribuye con la esperanza de que sea útil, pero 
+# SIN NINGUNA GARANTÍA; ni siquiera la garantía implícita de 
+# COMERCIALIZACIÓN o IDONEIDAD PARA UN PROPÓSITO PARTICULAR. consulte 
+# la Licencia Pública General de GNU para más detalles. 
+#
+# Debería haber recibido una copia de la Licencia Pública General de GNU 
+# junto con este programa. Si no es así, consulte <http://www.gnu.org/licenses/>.
+
+
+function ayuda()
+{
+	echo
+	echo $0
+	echo ".........................."
+	echo $"$0 {+|-|s|?}"
+	echo 
+	echo "   + Aumenta la resolucion."
+	echo "   - Disminuye la resolucion."
+	echo "   s Muestra la resolucion actual."
+	echo "   ? Mestra esta ayuda."
+	echo "   r Regresa a la resolucion base."
+	echo "----------------------------------------- "
+	echo "Autor: Javier Di Grazia"
+	echo "contacto: javier.digrazia@gmail.com"
+	echo "Copyright 2014 GPL v3, Javier Di Grazia"
+	echo
+}	
+
+#.......................................................................	
+#initialize
+##################
+#inicializa las siguientes variables globales con los datos actuales:
+#STATUS: indica el estado del proceso
+#X,Y:conservan los indices de los arrays respectivos a los ejes
+#CUR[i]:establece la resolucion base en escala 1:1 (i respecta al eje) 
+#INTERFACE: indica la interface actual
+#MAX[i]: idica las resoluciones maximas (i respecta al eje) 
+#PAN[i]: idica el estado de panning actual (i respecta al eje)
+#SCALE[i]: idica la escala actual (i respecta al eje)
+function initialize()
+{
+	#setea el estado del proceso en 0: Proceso correcto
+	STATUS=0
+	#se realiza una unica llamada a xrandr y se conserva para tomar todos los datos
+	local STATUS=$(xrandr)
+	#se actualiza la interface
+	refresh_interface
+	#se asignan indices a los ejes
+	let X=1
+	let Y=2
+	#se establecen la resolucion base
+	let CUR[${X}]=1024
+	let CUR[${Y}]=600
+	#actualiza MAX[i]
+	refresh_maximum
+	#actualiza PAN[i]
+	refresh_panning
+	#actualiza SCALE[i]
+	refresh_scale
+}
+
+#.......................................................................	
+#refresh_interface
+##################
+#actualiza la variable INTERFACE con la interface actual
+function refresh_interface()
+{
+	#Busca en STATUS la subcadena de formato "INTERFACE connected " 
+	INTERFACE=$(echo $STATUS|egrep -o '\w+\W+connected\W')
+	#Elimina de la subcadena encontrada la terminacion " connected "
+	INTERFACE=${INTERFACE% connected }
+}
+
+#.......................................................................	
+#refresh_maximum
+##################
+#actualiza las variables MAX[i] con los maximos soportados
+function refresh_maximum()
+{
+	#Busca en STATUS la subcadena de formato "maximum MAXX x MAXY" 
+	local MAXIMUM=$(echo $STATUS|egrep -o 'maximum\W+\w+\W+x\W+\w+')
+	#Elimina de la subcadena encontrada el inicio "maximum "
+	MAXIMUM=${MAXIMUM#maximum }
+	#corta la subcadena en los espacios y toma el primer elemento como x
+	let MAX[${X}]=$(echo $MAXIMUM|cut -d ' ' -f 1 )
+	#corta la subcadena en los espacios y toma el ultimo elemento como y
+	let MAX[${Y}]=$(echo $MAXIMUM|cut -d ' ' -f 3 )
+}
+
+#.......................................................................	
+#refresh_panning
+##################
+#actualiza las variables PAN[i] con los valores de panning actuales
+function refresh_panning()
+{
+	#Busca en STATUS la subcadena de formato "panning PANXxPANY" 
+	local PANNING=$(echo $STATUS|egrep -o 'panning\W\w+x\w+')
+	#si no se encuentra el panning, es porque no se esta usando
+	if [ "$PANNING" = "" ]
+	then
+		#en el caso de no estar usandolo, se lo asume igual a la resolucion base
+		let PAN[${X}]=${CUR[${X}]}
+		let PAN[${Y}]=${CUR[${Y}]}	
+	else
+		#en caso de encontrar el panning:
+		#Quita de la subcadena encontrada el principio "panning "
+		PANNING=${PANNING#panning }
+		#Quita de la subcadena encontrada los modificadores finales
+		PANNING=${PANNING%\+\w+}
+		#corta la subcadena en la 'x' y toma el primer elemento como x
+		let PAN[${X}]=$(echo $PANNING|cut -d 'x' -f 1 )
+		#corta la subcadena en la 'y' y toma el segundo elemento como y
+		let PAN[${Y}]=$(echo $PANNING|cut -d 'x' -f 2 )
+	fi
+}
+
+#.......................................................................	
+#refresh_scale
+##################
+#actualiza las variables SCALE[i] con los valores de escala actuales
+function refresh_scale()
+{
+	#actualiza la escala de la misma manera para los dos ejes
+	scale $X
+	scale $Y
+	
+}
+
+#.......................................................................	
+#scale $EJE
+##################
+#actualiza las variable SCALE[$EJE] con el valor de escala actual
+
+function scale()
+{
+	#en una variable auxiliar se guarda el panning del eje por 10
+	let local AUX=$(expr ${PAN[${1}]} \* 10 )
+	#se toma como escala la relacion entre AUX y la escala actual
+	let SCALE[${1}]=$(expr  $AUX / ${CUR[${1}]} )
+	#si el modulo de esta relacion es mayor a 5, se ajusta el truncado
+	if [ $(expr  $AUX % ${CUR[${1}]}) -gt 5 ]
+	then
+		let SCALE[${1}]=$(expr ${SCALE[${1}]} + 1 )
+	fi
+}
+
+#.......................................................................	
+#setVideo $PAN[x] $PAN[y] SCALE[x] SCALE[y]
+###########################################
+#setea el video actual a los valores pasados de spanning y escala
+function setVideo()
+{
+	#se preconfigura la salida a hacia INTERFACE
+	local OUTPUT="--output $INTERFACE"
+	#se preconfigura el modo a los valores de CUR[i]
+	local MODE="--mode ${CUR[1]}x${CUR[2]}"
+	#se preconfigura el panning segun parametros
+	local PANNING="--panning ${1}x${2}"
+	#se preconfigura la escala segun parametros
+	local SCALE="--scale ${3}x${4}"
+	#se llama a xrandr con los valores preconfigurados
+	`xrandr $OUTPUT $MODE $PANNING $SCALE`
+}
+
+#.......................................................................	
+#axis $EJE $NUEVAESCALA
+##################
+#setea la variable global NEW[$EJE] con el valor de la nueva resolucion 
+#al applicar la $NUEVAESCALA
+function axis()
+{
+	let NEW[${1}]=$(expr $(expr ${CUR[${1}]} \* $2) / 10 )
+	if [ ${NEW[${1}]} -gt ${MAX[${1}]} ]
+	then
+		STATUS=1 #Error nueva resolucion superior al rango
+	fi
+	if [ ${NEW[${1}]} -lt ${CUR[${1}]} ]
+	then
+		STATUS=2 #Error nueva resolucion inferior a la base
+	fi
+}
+
+#.......................................................................	
+#normalize $EJE $NUEVAESCALA
+##################
+#setea la variable global NORMALRESCALE[$EJE] con el valor de la escala
+#nueva normalizada (como string)
+function normalize()
+{	
+	NORMALRESCALE[${1}]="$(expr $2 / 10).$(expr $2 % 10)"
+}	 
+
+#.......................................................................	
+#prepareScaling $EJE $NUEVAESCALA
+##################
+#actualiza las variables NORMALRESCALE[$EJE] y NEW[$EJE]
+function prepareScaling()
+{
+	if [ $2 -gt 99 ]
+	then
+		STATUS=3 #Error nueva escala superior al rango
+	fi
+	if [ $2 -lt 01 ]
+	then
+		STATUS=4 #Error nueva escala inferior al rango
+	fi
+	axis $1 $2
+	normalize $1 $2
+}
+
+#.......................................................................	
+#rescale $NUEVAESCALA_X $NUEVAESCALA_Y
+#####################################
+#aplica la nueva escala en ambos ejes
+function rescale()	
+{
+	#actualiza los nuevos panning y crea las escalas  normalizadas  para los ejes
+	prepareScaling ${X} $1
+	prepareScaling ${Y} $2
+	if [ $STATUS -eq 0 ]
+	then 
+		#si no hubo errores en la nueva escala, aplica los cambios
+		setVideo ${NEW[${X}]} ${NEW[${Y}]} ${NORMALRESCALE[${X}]} ${NORMALRESCALE[${Y}]}
+	fi
+}
+
+#.......................................................................	
+#increase 
+#########
+#aumenta la escala actual en ambos ejes en 10%
+function increase()
+{
+	rescale $(expr ${SCALE[1]} + 1) $(expr ${SCALE[2]} + 1)
+}
+
+#.......................................................................	
+#decrease
+#########
+#reduce la escala actual en ambos ejes en 10%
+function decrease()
+{
+	rescale $(expr ${SCALE[1]} - 1) $(expr ${SCALE[2]} - 1)
+}
+
+#.......................................................................	
+#reset
+#########
+#vuelve a la escala base
+function reset()
+{
+	rescale 10 10
+}
+
+#.......................................................................	
+#show
+#####
+#muestra la resolucion actual
+
+function show()
+{
+	echo $(xrandr|egrep -o "current\W\w+\Wx\W\w+")
+}
+
+#######################################################################
+################ MAIN #################################################
+#######################################################################
+initialize
+case $1 in
+	'+') 	#Aumenta la resolucion
+			increase
+			show
+			;;
+	'-') 	#Disminuye la resolucion
+			decrease
+			show
+			;;
+	'r') 	#regresa a la resolucion base
+			reset
+			show
+			;;
+	's')	#Muestra la resolucion actual
+			show
+			;;
+	'?')	#Muestra la ayuda
+			ayuda $0
+			;;
+	*)		#Muestra los parametros aplicables
+			echo $"Uso: $0 {+|-|r|s|?}"	
+esac
+
+
